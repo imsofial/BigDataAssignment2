@@ -1,27 +1,44 @@
 from pathvalidate import sanitize_filename
-from tqdm import tqdm
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, trim, length
+import os
+import unicodedata
+import re
 
+
+INPUT_PATH = "file:///app/a.parquet"
+OUTPUT_DIR = "/app/data"
+num_docs = 1000
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 spark = SparkSession.builder \
-    .appName('data preparation') \
-    .master("local") \
+    .appName("PrepareData") \
+    .master("local[*]") \
     .config("spark.sql.parquet.enableVectorizedReader", "true") \
     .getOrCreate()
 
+def normalize_title(title):
+    title = re.sub(r"\s+", " ", title).strip()
+    title = sanitize_filename(title).replace(" ", "_")
+    title = re.sub(r"_+", "_", title).strip("._")
+    return title or "untitled"
 
-df = spark.read.parquet("/a.parquet")
-n = 1000
-df = df.select(['id', 'title', 'text']).sample(fraction=100 * n / df.count(), seed=0).limit(n)
+df = spark.read.parquet(INPUT_PATH) \
+    .select("id", "title", "text") \
+    .filter(col("id").isNotNull()) \
+    .filter(col("title").isNotNull()) \
+    .filter(col("text").isNotNull()) \
+    .filter(length(trim(col("text"))) > 0) \
+    .limit(num_docs)
 
+rows = df.collect()
 
-def create_doc(row):
-    filename = "data/" + sanitize_filename(str(row['id']) + "_" + row['title']).replace(" ", "_") + ".txt"
-    with open(filename, "w") as f:
-        f.write(row['text'])
+for row in rows:
+    title = normalize_title(row["title"])
+    filename = os.path.join(OUTPUT_DIR, f"{row['id']}_{title}.txt")
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(row["text"])
 
+spark.stop()
 
-df.foreach(create_doc)
-
-
-# df.write.csv("/index/data", sep = "\t")
